@@ -1,7 +1,7 @@
 {
   "name": "komunalka-bot",
-  "version": "1.0.0",
-  "description": "Telegram approval & forward bot for Komunalka screenshots",
+  "version": "2.0.0",
+  "description": "Telegram approval & forward bot for Komunalka screenshots (with HTTP endpoint)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

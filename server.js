@@ -1,5 +1,7 @@
-// komunalka-bot server (Telegraf + Express)
+// komunalka-bot v2 (Telegraf + Express + HTTP endpoint)
 // Purpose: Approve & forward screenshots to tenants
+// Adds POST /api/screenshot to receive base64/dataURL image from the web app
+// and send it to the APPROVER_ID, then the approver chooses a tenant via buttons.
 
 const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
@@ -10,6 +12,7 @@ const {
   TENANTS_JSON,
   WEBHOOK_URL,
   WEBHOOK_PATH = '/webhook',
+  API_KEY,
   PORT = 10000
 } = process.env;
 
@@ -31,13 +34,43 @@ try {
 }
 
 const app = express();
+app.use(express.json({ limit: '12mb' })); // for /api/screenshot
 const bot = new Telegraf(BOT_TOKEN);
 
-// Health & info
-app.get('/', (_req, res) => res.type('text').send('komunalka-bot is running.'));
+// Health endpoints
+app.get('/', (_req, res) => res.type('text').send('komunalka-bot v2 is running.'));
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-// Commands
+// --- HTTP API: receive screenshot from web app ---
+app.post('/api/screenshot', async (req, res) => {
+  try {
+    if (API_KEY && req.headers['x-api-key'] !== API_KEY) {
+      return res.status(401).json({ ok: false, error: 'unauthorized' });
+    }
+    let { image, caption = '' } = req.body || {};
+    if (!image) {
+      return res.status(400).json({ ok: false, error: 'image required (base64 or dataURL)' });
+    }
+    // image may be dataURL ('data:image/png;base64,...') or pure base64
+    if (typeof image !== 'string') {
+      return res.status(400).json({ ok: false, error: 'image must be string' });
+    }
+    const base64 = image.startsWith('data:') ? image.split(',')[1] : image;
+    const buf = Buffer.from(base64, 'base64');
+    if (!buf.length) {
+      return res.status(400).json({ ok: false, error: 'invalid base64' });
+    }
+
+    // Send to approver; bot logic will ask where to forward
+    await bot.telegram.sendPhoto(APPROVER_ID, { source: buf }, { caption });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('POST /api/screenshot error', e);
+    return res.status(500).json({ ok: false, error: 'server_error' });
+  }
+});
+
+// --- Bot commands ---
 bot.start((ctx) => ctx.reply('Вітаю! Надішліть фото розрахунку.\n/cfg — переглянути налаштування\n/id — показати ваш chat_id'));
 bot.command('id', (ctx) => ctx.reply(`Ваш chat_id: ${ctx.from.id}`));
 bot.command('cfg', (ctx) => {
@@ -53,10 +86,9 @@ bot.on('photo', async (ctx) => {
     return ctx.reply('Дякую! Очікуйте підтвердження власника.');
   }
 
-  // Build keyboard with tenants (up to 8 buttons per row)
   const buttons = tenants.map(t => Markup.button.callback(t.name, `send|${t.chatId}`));
   const rows = [];
-  while (buttons.length) rows.push(buttons.splice(0, 2)); // 2 per row for readability
+  while (buttons.length) rows.push(buttons.splice(0, 2)); // 2 per row
 
   await ctx.reply(
     'Куди відправити?',
@@ -72,7 +104,6 @@ bot.on('photo', async (ctx) => {
 
 bot.on('message', (ctx) => {
   if (ctx.message && ctx.message.document) {
-    // If user sent as file instead of photo, we still allow forwarding after /approve
     ctx.reply('Отримав файл. Для фото краще надсилати як "Photo", не як "File".');
   }
 });
